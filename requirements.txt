@@ -1,0 +1,6 @@
+langchain
+langgraph
+python-dotenv
+google-generativeai
+# Add other dependencies here, e.g., a specific LLM SDK like openai or anthropic
+# openai 
