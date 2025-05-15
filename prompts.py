@@ -1,5 +1,15 @@
 from typing import List, Optional
 
+predefined_settings = [
+    "a bustling medieval marketplace",
+    "a derelict spaceship drifting in the cosmos",
+    "a hidden magical school",
+    "a sun-scorched desert oasis",
+    "a mist-shrouded Victorian London",
+    "a vibrant coral reef teeming with life",
+    "a quiet village at the foot of a dragon's mountain"
+] 
+
 def get_challenge_generation_prompt(stage: str, plot_point: str, story_log_context: str) -> str:
     if stage == "RESOLUTION":
         return (
@@ -79,4 +89,5 @@ def get_initial_story_plot_prompt(story_setting: str, story_stages: List[str]) -
         f"\nKeep the language engaging but simple. The overall collection of plot points should form a cohesive story outline."
         f"\nExample for EXPOSITION only: EXPOSITION: A young scholar in a quiet monastery discovers a hidden map pointing to a legendary library said to contain all lost knowledge."
         f"\nNow, generate the plot points for all stages for the setting: '{story_setting}'."
-    ) 
+    )
+

@@ -25,5 +25,5 @@ The game guides the user through a story based on Freytag's Pyramid, presenting 
     ```
 4.  Run the game:
     ```bash
-    python narrative_game.py
+    python main.py
     ```
