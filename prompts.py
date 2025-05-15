@@ -1,17 +1,27 @@
 from typing import List, Optional
 
 def get_challenge_generation_prompt(stage: str, plot_point: str, story_log_context: str) -> str:
-    return (
-        f"You are a master storyteller and game designer. Your task is to craft the next part of an interactive story. "
-        f"The current story stage is: {stage}."
-        f"The overarching plot point or goal for this stage is: '{plot_point}'."
-        f"{story_log_context}" # This now includes how the previous stage resolved.
-        f"\nBased on the RECENT STORY EVENTS and the current STAGE ({stage}) with its PLOT POINT ('{plot_point}'), generate the following. Ensure your narrative directly and logically continues from the last event in RECENT STORY EVENTS:"
-        f"\nNARRATIVE: [Write 1-2 engaging paragraphs of narrative that continue the story, leading into a new challenge. This narrative MUST directly follow from the last event in RECENT STORY EVENTS.]"
-        f"\nCHALLENGE: [Based on your NARRATIVE, subtly create a situation or question that presents an immediate challenge for the player. This should be a direct consequence of the NARRATIVE you just wrote.]"
-        f"\nEXPECTED_SOLUTION: [Describe the general idea or key elements of a good player response to *your* CHALLENGE. This will guide AI evaluation.]"
-        f"\nOutput ONLY these three sections, each clearly labeled on a new line. Keep the language engaging."
-    )
+    if stage == "RESOLUTION":
+        return (
+            f"You are a master storyteller. The story has reached its RESOLUTION stage."
+            f"The overarching plot point for this final stage was: '{plot_point}'."
+            f"The story unfolded as follows (recent events):\n{story_log_context}"
+            f"\nBased on the plot point and the story events, write a compelling and satisfying conclusion to the narrative."
+            f"\nCONCLUSION_NARRATIVE: [Write 1-3 engaging paragraphs that resolve the story and provide a sense of closure. This conclusion MUST logically follow from the story events and the resolution plot point.]"
+            f"\nOutput ONLY the CONCLUSION_NARRATIVE section, clearly labeled."
+        )
+    else:
+        return (
+            f"You are a master storyteller and game designer. Your task is to craft the next part of an interactive story. "
+            f"The current story stage is: {stage}."
+            f"The overarching plot point or goal for this stage is: '{plot_point}'."
+            f"{story_log_context}" # This now includes how the previous stage resolved.
+            f"\nBased on the RECENT STORY EVENTS and the current STAGE ({stage}) with its PLOT POINT ('{plot_point}'), generate the following. Ensure your narrative directly and logically continues from the last event in RECENT STORY EVENTS:"
+            f"\nNARRATIVE: [Write 1-2 engaging paragraphs of narrative that continue the story, leading into a new challenge. This narrative MUST directly follow from the last event in RECENT STORY EVENTS.]"
+            f"\nCHALLENGE: [Based on your NARRATIVE, subtly create a situation or question that presents an immediate challenge for the player. This should be a direct consequence of the NARRATIVE you just wrote.]"
+            f"\nEXPECTED_SOLUTION: [Describe the general idea or key elements of a good player response to *your* CHALLENGE. This will guide AI evaluation.]"
+            f"\nOutput ONLY these three sections, each clearly labeled on a new line. Keep the language engaging."
+        )
 
 def get_answer_evaluation_prompt(
     story_log_context: str, 

@@ -1,11 +1,12 @@
-from typing import List, TypedDict, Optional, Literal, Annotated
+from typing import List, TypedDict, Optional, Literal
 from langgraph.graph import StateGraph, END
-# from langgraph.checkpoint.sqlite import SqliteSaver # Example checkpointing
+
 import os
 from dotenv import load_dotenv
 import google.generativeai as genai
-import random # Added for random setting selection
-import re # For parsing LLM output
+import random 
+import re 
+from langchain_core.runnables import RunnableConfig 
 
 # Import configurations
 from config import GEMINI_API_KEY, GENERATE_MODEL_NAME, EVALUATE_MODEL_NAME
@@ -19,35 +20,7 @@ from prompts import (
     get_initial_story_plot_prompt
 )
 
-# Load environment variables from .env file
-# load_dotenv() # Moved to config.py
 
-# Access your API key
-# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # Moved to config.py
-
-# Configure the Gemini API key
-# if GEMINI_API_KEY: # Logic moved to models.py
-#     try:
-#         genai.configure(api_key=GEMINI_API_KEY)
-#         print(f"Gemini API Key configured successfully.")
-#         # do not change!
-#         # GENERATE_MODEL_NAME = os.getenv("GENERATE_MODEL_NAME", "gemini-1.5-flash-latest") # Model for story generation # Moved to config.py
-#         # EVALUATE_MODEL_NAME = os.getenv("EVALUATE_MODEL_NAME", "gemini-1.5-flash-latest") # Model for user input evaluation # Moved to config.py
-# 
-#         generate_model = genai.GenerativeModel(GENERATE_MODEL_NAME)
-#         evaluate_model = genai.GenerativeModel(EVALUATE_MODEL_NAME) # General purpose model
-#         print(f"Gemini model '{GENERATE_MODEL_NAME}' initialized for generation tasks.")
-#         print(f"Gemini model '{EVALUATE_MODEL_NAME}' initialized for evaluation and detailed content tasks.")
-#     except Exception as e:
-#         print(f"Error configuring Gemini API or initializing model: {e}")
-#         generate_model = None
-#         evaluate_model = None
-# else:
-#     print("Error: GEMINI_API_KEY not found. Make sure it's set in your .env file. Core LLM features will be skipped.")
-#     generate_model = None
-#     evaluate_model = None
-
-# 1. State Definition
 StoryStage = Literal[
     "EXPOSITION",
     "INCITING_INCIDENT",
@@ -229,121 +202,106 @@ def challenge_generator(state: NarrativeGameState) -> NarrativeGameState:
 
     stage = state['current_stage']
     plot_point = state.get('current_stage_plot_point', "No specific plot point provided for this stage.")
-    # [-4:]
-    story_log_context = "\n".join(state.get('story_log', [-10])) # Use last 10 entries for richer context
-    # print(f"-----  Story Log Context: -------")
-    # print(f"{story_log_context}")
-    # print(f"----- Story Log Context: end -----")
+    story_log_context = "\n".join(state.get('story_log', [])[-10:]) # Use last 10 entries for richer context
     if not story_log_context.strip():
         story_log_context = "The story is just beginning. This is the first scene."
     else:
         story_log_context = f"RECENT STORY EVENTS:\n{story_log_context}"
 
     prompt = get_challenge_generation_prompt(stage, plot_point, story_log_context)
-    # (
-    #     f"You are a master storyteller and game designer. Your task is to craft the next part of an interactive story. "
-    #     f"The current story stage is: {stage}."
-    #     f"The overarching plot point or goal for this stage is: '{plot_point}'."
-    #     f"{story_log_context}" # This now includes how the previous stage resolved.
-    #     f"\nBased on the RECENT STORY EVENTS and the current STAGE ({stage}) with its PLOT POINT ('{plot_point}'), generate the following. Ensure your narrative directly and logically continues from the last event in RECENT STORY EVENTS:"
-    #     f"\nNARRATIVE: [Write 1-2 engaging paragraphs of narrative that continue the story, leading into a new challenge. This narrative MUST directly follow from the last event in RECENT STORY EVENTS.]"
-    #     f"\nCHALLENGE: [Based on your NARRATIVE, subtly create a situation or question that presents an immediate challenge for the player. This should be a direct consequence of the NARRATIVE you just wrote.]"
-    #     f"\nEXPECTED_SOLUTION: [Describe the general idea or key elements of a good player response to *your* CHALLENGE. This will guide AI evaluation.]"
-    #     f"\nOutput ONLY these three sections, each clearly labeled on a new line. Keep the language engaging."
-    # )
 
     print("\n--- Generating Challenge Content via LLM ---")
 
     try:
         response = generate_model.generate_content(prompt)
         raw_llm_response_text = response.text
-        
-        # print("\n--- Full LLM Response for Challenge Generation (DEBUG) ---")
-        # print(raw_llm_response_text)
-        # print("--- End LLM Response ---")
 
         if not response.parts:
-            # print("Warning: Received an empty or blocked response from the model for challenge generation.")
-            return { 
+            return {
                 **state,
-                "system_message": "Error generating challenge content (empty/blocked LLM response).",
-                "current_challenge_description": "Error: Could not generate challenge.",
-                "expected_solution": "Error: Could not generate solution criteria.",
-                "current_hint": None, "outcome_description": None
+                "system_message": "Error generating content (empty/blocked LLM response).",
+                "current_challenge_description": "Error: Could not generate content.",
+                "expected_solution": "Error: Could not generate solution criteria." if stage != "RESOLUTION" else None,
+                "challenge_passed": stage == "RESOLUTION", # Auto-pass for resolution if LLM fails here
             }
 
-        narrative = parse_labeled_content(raw_llm_response_text, "NARRATIVE")
-        challenge_text = parse_labeled_content(raw_llm_response_text, "CHALLENGE")
-        solution_criteria = parse_labeled_content(raw_llm_response_text, "EXPECTED_SOLUTION")
-
-        if not all([narrative, challenge_text, solution_criteria]):
-            # print("Error: Failed to parse NARRATIVE, CHALLENGE, or EXPECTED_SOLUTION from LLM response.")
-            return { 
+        if stage == "RESOLUTION":
+            conclusion_narrative = parse_labeled_content(raw_llm_response_text, "CONCLUSION_NARRATIVE")
+            if not conclusion_narrative:
+                conclusion_narrative = "The story reaches an end, but the details are shrouded in mist."
+                print("Warning: Failed to parse CONCLUSION_NARRATIVE from LLM response for RESOLUTION stage.")
+            
+            updated_story_log = state.get('story_log', []) + [f"STORY CONCLUSION (STAGE {stage}):\n{conclusion_narrative}"]
+            return {
                 **state,
-                "system_message": "Error: Critical failure in parsing LLM response for challenge generation.",
-                "current_challenge_description": (narrative or "Narrative failed.") + "\n" + (challenge_text or "Challenge failed."),
-                "expected_solution": solution_criteria or "Solution criteria failed.",
-                "current_hint": None, "outcome_description": None,
-                "challenge_passed": False, "attempt_count": 0, "hint_level": 0, "failed_responses": []
+                "story_log": updated_story_log,
+                "current_challenge_description": conclusion_narrative, # Display the conclusion
+                "expected_solution": None,
+                "challenge_passed": True, # RESOLUTION means challenge is passed
+                "system_message": "The story concludes...",
+                "user_response": None, # No user response needed for conclusion
+                "attempt_count": 0, 
+                "hint_level": 0
             }
-        
-        current_challenge_full_text = f"{narrative}\n\nCHALLENGE: {challenge_text}"
-        # The story_log from the state already contains the previous stage's resolution.
-        # We just add the new challenge narrative here.
-        updated_story_log = state.get('story_log', []) + [f"NARRATIVE FOR STAGE {stage}:\n{narrative}\n\nCHALLENGE: {challenge_text}"]
+        else:
+            narrative = parse_labeled_content(raw_llm_response_text, "NARRATIVE")
+            challenge_text = parse_labeled_content(raw_llm_response_text, "CHALLENGE")
+            solution_criteria = parse_labeled_content(raw_llm_response_text, "EXPECTED_SOLUTION")
 
-        # print(f"Challenge Generator: Parsed Narrative: '{narrative[:100]}...'")
-        # print(f"Challenge Generator: Parsed Challenge: '{challenge_text[:100]}...'")
-        # print(f"Challenge Generator: Parsed Solution Criteria: '{solution_criteria[:100]}...'")
+            if not all([narrative, challenge_text, solution_criteria]):
+                return {
+                    **state,
+                    "system_message": "Error: Critical failure in parsing LLM response for challenge generation.",
+                    "current_challenge_description": (narrative or "Narrative failed.") + "\n" + (challenge_text or "Challenge failed."),
+                    "expected_solution": solution_criteria or "Solution criteria failed.",
+                    "challenge_passed": False
+                }
+            
+            current_challenge_full_text = f"{narrative}\n\nCHALLENGE: {challenge_text}"
+            updated_story_log = state.get('story_log', []) + [f"NARRATIVE FOR STAGE {stage}:\n{narrative}\n\nCHALLENGE: {challenge_text}"]
 
-        return {
-            **state,
-            "story_log": updated_story_log,
-            "current_challenge_description": current_challenge_full_text,
-            "expected_solution": solution_criteria,
-            "attempt_count": 0,
-            "hint_level": 0,
-            "challenge_passed": False,
-            "system_message": f"Challenge for {stage} generated and ready.", # Changed message
-            "failed_responses": [],
-            "user_response": None,
-            "current_hint": None, 
-            "outcome_description": None
-        }
+            return {
+                **state,
+                "story_log": updated_story_log,
+                "current_challenge_description": current_challenge_full_text,
+                "expected_solution": solution_criteria,
+                "attempt_count": 0,
+                "hint_level": 0,
+                "challenge_passed": False,
+                "system_message": f"Challenge for {stage} generated and ready.",
+                "failed_responses": [],
+                "user_response": None,
+                "current_hint": None, 
+                "outcome_description": None
+            }
 
     except Exception as e:
         # print(f"Error during LLM challenge generation: {e}")
-        return { 
+        return {
             **state,
-            "system_message": f"Error generating challenge for {stage}: {e}",
-            "current_challenge_description": f"Error: Could not generate challenge for {stage} due to exception.",
-            "expected_solution": "Error: Criteria generation failed.",
-            "current_hint": None, "outcome_description": None
+            "system_message": f"Error generating content for {stage}: {e}",
+            "current_challenge_description": f"Error: Could not generate content for {stage} due to exception.",
+            "expected_solution": "Error: Criteria generation failed." if stage != "RESOLUTION" else None,
+            "challenge_passed": stage == "RESOLUTION" # Auto-pass for resolution if LLM fails here
         }
 
 def present_challenge_and_get_response(state: NarrativeGameState) -> NarrativeGameState:
-    print(f"--- Entering Node: present_challenge_and_get_response ---")
-    
+    print(f"--- Entering Node: present_challenge_and_get_response --- Stage: {state.get('current_stage')}")
+
+    # If it's RESOLUTION stage and challenge_passed is True (meaning conclusion was generated)
+    if state.get('current_stage') == "RESOLUTION" and state.get('challenge_passed') == True:
+        print("\n--- Story Conclusion ---")
+        conclusion_text = state.get('current_challenge_description', "The story has ended.")
+        print(conclusion_text)
+        # No user input needed, just pass the state along. answer_evaluator will then lead to END.
+        return {**state} # Ensure all state is passed through
+
     system_message = state.get("system_message")
-    outcome_description_exists = bool(state.get("outcome_description"))
-    challenge_previously_failed = not state.get("challenge_passed", True) and state.get("attempt_count", 0) > 0
 
     # Display custom message from evaluator (outcome + hint) if it exists from a previous failed attempt
     if system_message:
         print(f"\nSystem: {system_message}")
     
-    # Only display the full story/challenge if it's the first attempt for this specific challenge instance,
-    # or if there isn't a specific outcome/hint message to show (e.g. fresh stage setup).
-    # The `attempt_count` being > 0 and `challenge_passed` being False indicates a retry on the *same* challenge.
-    # `system_message` being present and containing a hint from a failure also signals a retry.
-
-    # If it's a retry (attempt_count > 0, not passed) AND we have a system_message (which should be outcome+hint)
-    # then we might have already printed it. The key is not to reprint the full challenge.
-    
-    # New simplified logic:
-    # If there was a system message from the evaluator (outcome + hint), we've already printed it.
-    # We only print the full challenge if it's effectively the first presentation of *this instance* of the challenge.
-    # `attempt_count` being 0 signals the first time for *this* challenge instance.
     if state.get("attempt_count", 0) == 0:
         print("\n--- Your Story So Far ---")
         if state.get('story_log'):
@@ -365,15 +323,22 @@ def present_challenge_and_get_response(state: NarrativeGameState) -> NarrativeGa
     # Clear system_message, current_hint, and outcome_description before next evaluation cycle for this node.
     # The evaluator will set new ones if the user fails again.
     return {
+        **state, # Preserve all existing state fields
         "user_response": user_input,
-        "system_message": None,
-        "current_hint": None,
-        "outcome_description": None
-        # Preserve other parts of the state by not listing them or by passing **state if needed
+        "system_message": None, # Clear for next eval cycle
+        "current_hint": None, # Clear for next eval cycle
+        "outcome_description": None # Clear for next eval cycle
     }
 
 def answer_evaluator(state: NarrativeGameState) -> NarrativeGameState:
-    print(f"--- Entering Node: answer_evaluator ---")
+    print(f"--- Entering Node: answer_evaluator --- Stage: {state.get('current_stage')}")
+
+    # If it's RESOLUTION and challenge_passed is True, means conclusion was handled.
+    # Pass through to allow should_advance_or_retry to send to END.
+    if state.get('current_stage') == "RESOLUTION" and state.get('challenge_passed') == True:
+        print("Answer Evaluator: RESOLUTION stage with challenge_passed=True. Passing through for game end.")
+        return {**state} # Pass the state as is
+
     if not evaluate_model:
         print("Error: evaluate_model not initialized. Cannot evaluate answer.")
         return { 
@@ -397,14 +362,6 @@ def answer_evaluator(state: NarrativeGameState) -> NarrativeGameState:
     if current_attempt_count >= max_attempts:
         print(f"Max attempts ({max_attempts}) reached. Generating intervention.")
         intervention_prompt = get_intervention_prompt(challenge_desc, story_log_context, current_attempt_count, user_response)
-        # (
-        #     f"The player is stuck on a challenge: '{challenge_desc}'.\n"
-        #     f"The story context: '{story_log_context}'.\n"
-        #     f"The player has failed {current_attempt_count} times. Their last attempt was: '{user_response}'.\n"
-        #     f"Generate a short narrative (2-3 sentences) where an external event or another character intervenes to resolve the current situation for the player, allowing the story to progress. "
-        #     f"This intervention should make it clear that the immediate challenge is overcome. Label it clearly as INTERVENTION_NARRATIVE:"
-        #     f"\nINTERVENTION_NARRATIVE: [Your intervention narrative]"
-        # )
         try:
             intervention_response = generate_model.generate_content(intervention_prompt)
             intervention_text = parse_labeled_content(intervention_response.text, "INTERVENTION_NARRATIVE")
@@ -492,25 +449,6 @@ def answer_evaluator(state: NarrativeGameState) -> NarrativeGameState:
         failed_responses=state.get('failed_responses', []),
         current_hint_level=current_hint_level
     )
-    # (
-    #     f"You are an AI companion in a narrative game. Evaluate the player's response and provide an outcome description and a new hint."
-    #     f"STORY CONTEXT SO FAR:\n{story_log_context}"
-    #     f"\nCHALLENGE: '{challenge_desc}'."
-    #     # f"\nEXPECTED SOLUTION CRITERIA: '{expected_solution_criteria}'."
-    #     f"\nPLAYER RESPONSE: '{user_response}'."
-    #     f"\nPLAYER'S PREVIOUS FAILED ATTEMPTS THIS CHALLENGE: {state.get('failed_responses', [])}"
-    #     f"\nCURRENT HINT LEVEL (0=subtle, 1=direct, 2=very direct): {current_hint_level}"
-    #     f"\nTASKS:"
-    #     f"1. EVALUATION: Determine if the PLAYER RESPONSE is either at least a bit reasonable or creative. In that case PASS. Be very undemanding, almost anything goes. Just don't be a jerk. Only fail if it's some nonsensical chars or trolling or clearly stupid."
-    #     f"2. OUTCOME: Describe what happens in the game world as a result of the player's failed action (1-2 sentences). Make it engaging."
-    #     f"3. only if EVALUATION is FAIL - HINT: Provide a new, {hint_directness} hint. "
-    #     f"\nOUTPUT FORMAT: Use the following labels EXACTLY, each on a new line. "
-    #     f"EVALUATION: [PASS or FAIL]"
-    #     f"OUTCOME: [Your outcome description]"
-    #     f"HINT: [Your new hint, only if FAIL]"
-    # )
-
-# This hint is crucial. It MUST directly help the player understand how to meet the specific EXPECTED SOLUTION CRITERIA: '{expected_solution_criteria}'. Guide them towards these criteria without giving the exact answer, unless hint_directness is 'very direct'."
 
     print("\n--- Evaluating Answer and Generating Hint/Outcome via LLM ---")
 
@@ -656,36 +594,46 @@ def run_game():
         "outcome_description": None
     }
     
-    config = {"configurable": {"thread_id": "narrative-game-thread-1"}} # Example thread_id for checkpointing
-
-    # Stream events to see the flow
-    # The input to stream is the initial state or subsequent inputs for nodes that require them.
-    # For a state machine that manages its own inputs internally (like ours mostly does after init),
-    # the initial call is with the starting state.
-    # Subsequent calls might not be needed if graph flows automatically, or if a node needs external input
-    # that isn't part of the state (which present_challenge_and_get_response handles via input()).
-
-    # The loop here is mostly for manual control/demonstration if the graph doesn't reach END naturally
-    # or if we want to inspect state between "human" steps.
-    # LangGraph's stream will run until it hits END or needs input it can't get from state.
+    config = RunnableConfig(
+        recursion_limit=500, 
+        configurable={"thread_id": "narrative-game-thread-1"}
+    )
 
     print("\\n--- Game Start ---")
     current_state_stream = app.stream(initial_state, config=config)
+    last_event = None
     for event in current_state_stream:
-        # event is a dictionary where keys are node names and values are the output of that node
-        # print(f"Event: {event}")
-        # We can inspect the full state if needed from the event,
-        # for example, the last event before it stops or asks for input.
-        # The `present_challenge_node` will pause for `input()`.
-        # The loop will continue after `input()` is provided and that node finishes.
-        pass # The print statements within nodes will show progress.
+        last_event = event # Capture the last event
+        pass 
     
-    final_state = app.get_state(config)
-    print("\\n--- Game End ---")
-    print("Final Story Log:")
-    for entry in final_state.values['story_log']:
-        print(entry)
-    print(f"Final system message: {final_state.values.get('system_message')}")
+    final_state_values = None
+    try:
+        final_state_check = app.get_state(config) # config still holds the thread_id
+        if final_state_check:
+            final_state_values = final_state_check.values
+    except ValueError as e:
+        if "No checkpointer set" in str(e):
+            # This is expected if no checkpointer is set
+            pass
+        else:
+            print(f"Error calling app.get_state(): {e}") # Other ValueErrors
+    except Exception as e:
+        # Catch other potential exceptions from app.get_state if any
+        print(f"Unexpected error calling app.get_state(): {e}")
+
+    if final_state_values is None and last_event:
+        print("Using last event from stream as final state.")
+        if isinstance(last_event, dict) and last_event:
+            final_state_values = last_event
+
+    if final_state_values:
+        print("\\n--- Game End ---")
+        print("Final Story Log:")
+        for entry in final_state_values['story_log']:
+            print(entry)
+        print(f"Final system message: {final_state_values.get('system_message')}")
+    else:
+        print("Final state could not be retrieved. Game ended without completing.")
 
 
 # Helper function to parse labeled content from LLM response
@@ -703,25 +651,9 @@ def generate_initial_story_plot(story_setting: str) -> tuple[Optional[str], Opti
         print("Skipping initial story plot generation as the generate_model was not initialized.")
         return None, None
 
-    stages_for_prompt = "\n".join([f"{stage.upper()}: [Brief plot point or key event for this stage]" for stage in STORY_STAGES])
-
     prompt = get_initial_story_plot_prompt(story_setting, STORY_STAGES)
-    # (
-    #     f"You are a master storyteller. Your task is to outline a short story plot based on Freytag's Pyramid. "
-    #     f"The story should be set in: '{story_setting}'. "
-    #     f"For each of the following story stages, provide a concise plot point (1-2 sentences) that describes the key event or development for that stage. "
-    #     f"Ensure each plot point clearly flows into the next, creating a coherent narrative arc. "
-    #     f"Format your response *exactly* as follows, with each stage on a new line followed by its plot point:"
-    #     f"\nEXPOSITION: [Your plot point for Exposition]"
-    #     f"\nINCITING_INCIDENT: [Your plot point for Inciting Incident]"
-    #     f"\n(and so on for all stages: {', '.join(STORY_STAGES)})"
-    #     f"\nKeep the language engaging but simple. The overall collection of plot points should form a cohesive story outline."
-    #     f"\nExample for EXPOSITION only: EXPOSITION: A young scholar in a quiet monastery discovers a hidden map pointing to a legendary library said to contain all lost knowledge."
-    #     f"\nNow, generate the plot points for all stages for the setting: '{story_setting}'."
-    # )
 
     print("\n--- Generating Initial Story Plot Points ---")
-    # print(f"Prompt for initial plot: {prompt}") # Keep this for debugging if needed
 
     full_response_text = ""
     plot_points_list = []
@@ -843,18 +775,13 @@ if __name__ == "__main__":
     # Then run the game
     print("\n--- Starting Interactive Game ---")
     
-    config = {"configurable": {"thread_id": "narrative-game-thread-1"}} # Example thread_id for checkpointing
+    config = RunnableConfig(
+        recursion_limit=500, 
+        configurable={"thread_id": "narrative-game-thread-1"}
+    )
 
     # Pass the fully prepared initial state to the stream method
     current_state_stream = app.stream(initial_game_state_params, config=config)
     for event in current_state_stream:
         pass 
     
-    final_state = app.get_state(config)
-    print("\n--- Game End ---")
-    if final_state.values.get('story_log'):
-        print("Final Story Log:")
-        for entry in final_state.values['story_log']:
-            print(entry)
-    print(f"Final system message: {final_state.values.get('system_message')}")
-
